@@ -1,7 +1,98 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Simulation Comparison</title>
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+      font-family: sans-serif;
+      background: #111;
+      color: #fff;
+    }
+    #label {
+      position: absolute;
+      top: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 1;
+      text-align: center;
+    }
+    canvas {
+      display: inline-block;
+      vertical-align: top;
+    }
+  </style>
+</head>
 <body>
-<h1>Hello World</h1>
-<p>I'm hosted with GitHub Pages.</p>
+  <div id="label">
+    <h2>Code Optimization Showcase</h2>
+    <p>Left: Naive Simulation | Right: Optimized Simulation</p>
+  </div>
+  <canvas id="canvas1" width="600" height="400"></canvas>
+  <canvas id="canvas2" width="600" height="400"></canvas>
+
+  <script>
+    class BouncingBox {
+      constructor(width, height) {
+        this.w = width;
+        this.h = height;
+        this.reset();
+      }
+
+      reset() {
+        this.x = Math.random() * (this.w - 50);
+        this.y = Math.random() * (this.h - 50);
+        this.vx = (Math.random() * 2 + 1) * (Math.random() < 0.5 ? 1 : -1);
+        this.vy = (Math.random() * 2 + 1) * (Math.random() < 0.5 ? 1 : -1);
+        this.size = 40;
+      }
+
+      update() {
+        this.x += this.vx;
+        this.y += this.vy;
+        if (this.x <= 0 || this.x + this.size >= this.w) this.vx *= -1;
+        if (this.y <= 0 || this.y + this.size >= this.h) this.vy *= -1;
+      }
+
+      draw(ctx) {
+        ctx.fillStyle = "#00ffcc";
+        ctx.fillRect(this.x, this.y, this.size, this.size);
+      }
+    }
+
+    class Simulation {
+      constructor(canvasId) {
+        const canvas = document.getElementById(canvasId);
+        this.canvas = canvas;
+        this.ctx = canvas.getContext("2d");
+        this.box = new BouncingBox(canvas.width, canvas.height);
+      }
+
+      update() {
+        this.box.update();
+      }
+
+      draw() {
+        this.ctx.fillStyle = "#222";
+        this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+        this.box.draw(this.ctx);
+      }
+    }
+
+    const sim1 = new Simulation("canvas1"); // Naive
+    const sim2 = new Simulation("canvas2"); // Optimized
+
+    function loop() {
+      sim1.update();
+      sim2.update();
+      sim1.draw();
+      sim2.draw();
+      requestAnimationFrame(loop);
+    }
+
+    loop();
+  </script>
 </body>
 </html>
