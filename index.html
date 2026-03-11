@@ -2,97 +2,1375 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Simulation Comparison</title>
+  <title>Resources Gathering Minions — Domains + Big Minions</title>
   <style>
-    body {
-      margin: 0;
-      overflow: hidden;
-      font-family: sans-serif;
-      background: #111;
-      color: #fff;
+    html, body {
+      margin: 0; padding: 0; height: 100%; background: #111;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      color: #fff; display: flex; flex-direction: column; overflow: hidden;
     }
-    #label {
-      position: absolute;
-      top: 10px;
-      left: 50%;
-      transform: translateX(-50%);
-      z-index: 1;
-      text-align: center;
+    #label { flex: 0 0 auto; padding: 10px; text-align: center; color: #ddd; }
+    #label h2 { margin: 0 0 4px 0; font-size: 20px; }
+    #label p { margin: 0; font-size: 13px; color: #aaa; }
+
+    #stage { position: relative; flex: 1 1 auto; margin: 20px; }
+    #canvas1 {
+      width: 100%; height: 100%; display: block; background: #222;
+      border: 2px solid #333; cursor: grab;
     }
-    canvas {
-      display: inline-block;
-      vertical-align: top;
+    #canvas1:active { cursor: grabbing; }
+
+    #controls {
+      position: absolute; top: 10px; right: 10px; display:flex; gap:8px;
+      background: rgba(0,0,0,0.45); border: 1px solid rgba(255,255,255,0.12);
+      padding: 6px 8px; border-radius: 6px; font-size: 13px; user-select: none;
     }
+    #controls button {
+      background: #333; color:#eee; border:1px solid #555; padding:4px 8px; border-radius:4px;
+      cursor: pointer; min-width:32px;
+    }
+    #controls button:hover { background: #4a4a4a; }
+    .opt-on {
+      background: #1f7a3a !important;
+      border-color: #3bc46a !important;
+    }
+    #minionCount { color: #ddd; min-width: 110px; text-align:center; }
   </style>
 </head>
 <body>
   <div id="label">
-    <h2>Code Optimization Showcase</h2>
-    <p>Left: Naive Simulation | Right: Optimized Simulation</p>
+    <h2>Resources Gathering Minions (Domains)</h2>
+    <p>Drag to move • Domains hold local resources • Big minions ferry domain stock to central depot</p>
   </div>
-  <canvas id="canvas1" width="600" height="400"></canvas>
-  <canvas id="canvas2" width="600" height="400"></canvas>
+
+  <div id="stage">
+    <canvas id="canvas1"></canvas>
+    <div id="controls">
+      <button id="minusBtn" title="Decrease">−</button>
+      <span id="minionCount">10000 minions</span>
+      <button id="plusBtn" title="Increase">+</button>
+      <button id="centerBtn" title="Center view">Center</button>
+      <button id="optBtn" title="Toggle optimized">Optimized: OFF</button>
+      <label>Seed:</label>
+      <input id="seedInput" value="4294967295" step="1" min="1" max="4294967295" type="number" style="width:90px">
+      <label>Duration(s):</label>
+      <input id="durationInput" type="number" value="60" step="1" min="1" style="width:70px">
+      <button id="restartBtn" title="Restart simulation">⟳</button>
+      <button id="pauseBtn" title="Pause / Play">⏸</button>
+    </div>
+  </div>
 
   <script>
-    class BouncingBox {
-      constructor(width, height) {
-        this.w = width;
-        this.h = height;
-        this.reset();
+
+
+
+/* ====================== PERF MONITOR (TRUTHFUL) ====================== */
+const PERF = {
+  enabled: true,
+
+  // history
+  historySize: 240,          // ~4 seconds @60fps
+  frames: [],
+  updates: [],
+  draws: [],
+
+  // timing
+  _frameStart: 0,
+  _updateStart: 0,
+  _drawStart: 0,
+
+  // fps (EMA)
+  fps: 60,
+  _lastFrameTime: performance.now(),
+
+  // GC / jank detection
+  jankThreshold: 40,         // ms (2.5x frame budget)
+  gcCount: 0,
+
+  /* ---------- hooks ---------- */
+
+  frameBegin() {
+    if (!this.enabled) return;
+    this._frameStart = performance.now();
+  },
+
+  updateBegin() {
+    if (!this.enabled) return;
+    this._updateStart = performance.now();
+  },
+
+  updateEnd() {
+    if (!this.enabled) return;
+    this._updateTime = performance.now() - this._updateStart;
+  },
+
+  drawBegin() {
+    if (!this.enabled) return;
+    this._drawStart = performance.now();
+  },
+
+  drawEnd() {
+    if (!this.enabled) return;
+    this._drawTime = performance.now() - this._drawStart;
+  },
+
+  frameEnd() {
+    if (!this.enabled) return;
+
+    const now = performance.now();
+    const frameTime = now - this._frameStart;
+
+    // store history
+    this.frames.push(frameTime);
+    this.updates.push(this._updateTime || 0);
+    this.draws.push(this._drawTime || 0);
+
+    if (this.frames.length > this.historySize) {
+      this.frames.shift();
+      this.updates.shift();
+      this.draws.shift();
+    }
+
+    // FPS via EMA
+    const dt = now - this._lastFrameTime;
+    this._lastFrameTime = now;
+    const instantFPS = 1000 / dt;
+    this.fps = this.fps * 0.9 + instantFPS * 0.1;
+
+    // GC / jank detection
+    if (frameTime > this.jankThreshold) {
+      this.gcCount++;
+    }
+  },
+
+  /* ---------- rendering ---------- */
+
+  draw(ctx) {
+    if (!this.enabled || this.frames.length === 0) return;
+
+    const w = 260;
+    const h = 120;
+    const x = 10;
+    const y = 10;
+
+    // fixed honest scale (60fps baseline)
+    const maxMs = 50; // do NOT autoscale
+
+    ctx.save();
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    ctx.fillStyle = "rgba(0,0,0,0.7)";
+    ctx.fillRect(x, y, w, h);
+
+    // grid
+    ctx.strokeStyle = "rgba(255,255,255,0.1)";
+    ctx.beginPath();
+    for (let i = 0; i <= 5; i++) {
+      const yy = y + (i / 5) * h;
+      ctx.moveTo(x, yy);
+      ctx.lineTo(x + w, yy);
+    }
+    ctx.stroke();
+
+    // frame time (white)
+    ctx.strokeStyle = "#ffffff";
+    this._plot(ctx, this.frames, x, y, w, h, maxMs);
+
+    // update time (green)
+    ctx.strokeStyle = "#00ff88";
+    this._plot(ctx, this.updates, x, y, w, h, maxMs);
+
+    // draw time (cyan)
+    ctx.strokeStyle = "#00ccff";
+    this._plot(ctx, this.draws, x, y, w, h, maxMs);
+
+    // stats
+    const WINDOW = Math.min(20, this.frames.length);
+    const avg = this._avgRecent(this.frames, WINDOW);
+    const max = this._maxRecent(this.frames, WINDOW);
+
+    ctx.fillStyle = "#fff";
+    ctx.font = "12px monospace";
+    ctx.fillText(`FPS: ${this.fps.toFixed(1)}`, x + 6, y + 14);
+    ctx.fillText(`Frame: ${avg.toFixed(2)} ms`, x + 6, y + 30);
+    ctx.fillText(`Max: ${max.toFixed(1)} ms`, x + 6, y + 44);
+    ctx.fillText(`Update: ${this._avgRecent(this.updates, WINDOW).toFixed(2)} ms`, x + 6, y + 58);
+    ctx.fillText(`Draw: ${this._avgRecent(this.draws, WINDOW).toFixed(2)} ms`, x + 6, y + 72);
+    ctx.fillText(`Jank (>40ms): ${this.gcCount}`, x + 6, y + 88);
+
+    ctx.restore();
+  },
+
+  /* ---------- helpers ---------- */
+
+  _avgRecent(arr, n) {
+    const len = arr.length;
+    const start = Math.max(0, len - n);
+
+    let s = 0;
+    let count = 0;
+
+    for (let i = start; i < len; i++) {
+      s += arr[i];
+      count++;
+    }
+
+    return count ? s / count : 0;
+  },
+
+  _maxRecent(arr, n) {
+    const len = arr.length;
+    const start = Math.max(0, len - n);
+
+    let m = 0;
+
+    for (let i = start; i < len; i++) {
+      if (arr[i] > m) m = arr[i];
+    }
+
+    return m;
+  },
+
+  _plot(ctx, arr, x, y, w, h, maxMs) {
+    ctx.beginPath();
+    for (let i = 0; i < arr.length; i++) {
+      const px = x + (i / (this.historySize - 1)) * w;
+      const py = y + h - (arr[i] / maxMs) * h;
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+  }
+};
+
+/* ====================== SEEDED RNG ====================== */
+
+class RNG {
+  constructor(seed) {
+    this.seed = seed >>> 0;
+  }
+
+  next() {
+    // xorshift32
+    let x = this.seed;
+    x ^= x << 13;
+    x ^= x >>> 17;
+    x ^= x << 5;
+    this.seed = x >>> 0;
+
+    return (this.seed) / 4294967296;
+  }
+}
+
+/* ====================== CONFIG ====================== */
+const CONFIG = {
+  WORLD_WIDTH: 100000,
+  WORLD_HEIGHT: 50000,
+
+  // Domains grid
+  DOMAIN_DIVISIONS: 100,                // n; total domains = n * n
+
+  // Domain visuals / depot
+  DOMAIN_DEPOT_W: 90,
+  DOMAIN_DEPOT_H: 60,
+  DOMAIN_DEPOT_STROKE: "#7ab3ff",
+  DOMAIN_DEPOT_DASH: [8,5],
+  DOMAIN_STOCK_FILL: "rgba(255,255,0,0.2)",
+  DOMAIN_STOCK_STROKE: "rgba(255,255,0,0.7)",
+  DOMAIN_STOCK_MIN_R: 8,         // visible minimum radius
+  DOMAIN_STOCK_LOG_K: 7,        // central constant: radius = K * log10(count)
+  DOMAIN_STOCK_MAX_R: 40,       // clamp so radius doesn't explode
+
+  // Central depot
+  CENTRAL_DEPOT_W: 420,
+  CENTRAL_DEPOT_H: 260,
+  CENTRAL_DEPOT_STROKE: "#ff8a8a",
+  CENTRAL_DEPOT_DASH: [14,8],
+
+  // Small resources
+  RESOURCE_RADIUS: 3,
+  RESOURCE_FILL: "#ffff00",
+  RESOURCE_STROKE: "#000",
+
+  // Local minions (per-domain)
+  MINION_SIZE: 5,
+  MINION_SPEED: 2,
+
+  // Big minion visuals (one per domain)
+  BIG_MINION_SIZE: 10,
+  BIG_MINION_SPEED: 10,
+  BIG_MINION_COLOR: "#ff66cc",
+  BIG_MINION_OUTLINE: "#000",
+  BIG_RESOURCE_RADIUS: 8,
+  BIG_RESOURCE_FILL: "#ffd54d",
+  BIG_RESOURCE_STROKE: "#000",
+
+  // Drawing cues
+  CONCENTRIC_STEP: 200,
+  RAY_ANGLE_STEP_DEG: 10,
+  CUE_ALPHA: 0.06,
+
+  // Input drag multipliers
+  DRAG_MULT_MOUSE: 5,
+  DRAG_MULT_TOUCH: 1.5,
+
+  // UI steps (total minions across world)
+  MINION_STEPS: [25000, 50000, 100000, 250000, 500000, 1000000, 2500000, 5000000, 10000000, 25000000],
+
+  // vertical spacing above small minion
+  SMALL_RESOURCE_OFFSET: 5,
+
+  // vertical spacing above big minion
+  BIG_RESOURCE_OFFSET: 5,
+
+  // used for conversion between ticks and time
+  TICKS_PER_SECOND: 60
+};
+
+/* =========== Helpers =========== */
+function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+
+// ===== Helper to compute log10 radius =====
+function stockRadius(count){
+  // return 0 if no stock so nothing draws
+  if (!count || count <= 0) return 0;
+  // log10-based radius, clamped to min/max
+  const raw = CONFIG.DOMAIN_STOCK_LOG_K * Math.log10(count);
+  return Math.max(CONFIG.DOMAIN_STOCK_MIN_R, Math.min(CONFIG.DOMAIN_STOCK_MAX_R, raw));
+}
+
+/* =========== Viewport =========== */
+class Viewport {
+  constructor(cx,cy,w,h,worldW,worldH){
+    this.x = cx; this.y = cy; this.width = w; this.height = h;
+    this.worldWidth = worldW; this.worldHeight = worldH;
+  }
+  setSize(w,h){ this.width = w; this.height = h; this._clamp(); }
+  move(dx,dy){ this.x += dx; this.y += dy; this._clamp(); }
+  centerOn(cx,cy){ this.x = cx; this.y = cy; this._clamp(); }
+  _clamp(){
+    const hw = this.width/2, hh = this.height/2;
+    this.x = clamp(this.x, hw, this.worldWidth - hw);
+    this.y = clamp(this.y, hh, this.worldHeight - hh);
+  }
+  worldToScreen(wx,wy){ return { x: wx - this.x + this.width/2, y: wy - this.y + this.height/2 }; }
+  clear(ctx){ ctx.fillStyle = "#222"; ctx.fillRect(0,0,this.width,this.height); }
+  drawWorldBorder(ctx){
+    const tl = this.worldToScreen(0,0);
+    ctx.save();
+    ctx.strokeStyle = "#ff5555";
+    ctx.setLineDash([10,6]);
+    ctx.lineWidth = 2;
+    ctx.strokeRect(tl.x, tl.y, this.worldWidth, this.worldHeight);
+    ctx.restore();
+  }
+  drawCenterCues(ctx){
+    const wcx = this.worldWidth/2, wcy = this.worldHeight/2;
+    const c = this.worldToScreen(wcx, wcy);
+    const maxR = Math.hypot(this.worldWidth, this.worldHeight);
+    ctx.save();
+    ctx.strokeStyle = `rgba(255,255,255,${CONFIG.CUE_ALPHA})`;
+    ctx.lineWidth = 1;
+    for(let r = CONFIG.CONCENTRIC_STEP; r <= maxR; r += CONFIG.CONCENTRIC_STEP){
+      ctx.beginPath(); ctx.arc(c.x, c.y, r, 0, Math.PI*2); ctx.stroke();
+    }
+    for(let a = 0; a < 360; a += CONFIG.RAY_ANGLE_STEP_DEG){
+      const rad = a * Math.PI/180;
+      ctx.beginPath(); ctx.moveTo(c.x, c.y); ctx.lineTo(c.x + Math.cos(rad)*maxR, c.y + Math.sin(rad)*maxR); ctx.stroke();
+    }
+    ctx.restore();
+  }
+  drawDomainGrid(ctx, cellW, cellH, n){
+    ctx.save();
+    ctx.strokeStyle = "rgba(255,255,255,0.06)"; ctx.lineWidth = 1;
+    for(let i=1;i<n;i++){
+      // vertical
+      const x = i*cellW;
+      const a = this.worldToScreen(x, 0), b = this.worldToScreen(x, this.worldHeight);
+      ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+      // horizontal
+      const y = i*cellH;
+      const c = this.worldToScreen(0, y), d = this.worldToScreen(this.worldWidth, y);
+      ctx.beginPath(); ctx.moveTo(c.x,c.y); ctx.lineTo(d.x,d.y); ctx.stroke();
+    }
+    ctx.restore();
+  }
+}
+
+/* ====================== DOMAIN OFFSET POOL ====================== */
+class OffsetPool {
+  constructor(totalMinions, domainW, domainH, depotW, depotH) {
+    this.size = Math.max(100, Math.floor(totalMinions * 0.1));
+    this.dx = new Float32Array(this.size);
+    this.dy = new Float32Array(this.size);
+    this.ptr = 0;
+
+    // precompute offsets inside domain but outside depot
+    for (let i = 0; i < this.size; i++) {
+      let x, y;
+      do {
+        x = rng.next() * domainW;
+        y = rng.next() * domainH;
+      } while (
+        x > (domainW - depotW) * 0.5 &&
+        x < (domainW + depotW) * 0.5 &&
+        y > (domainH - depotH) * 0.5 &&
+        y < (domainH + depotH) * 0.5
+      );
+
+      this.dx[i] = x;
+      this.dy[i] = y;
+    }
+  }
+
+  randomCoordinate(out, baseX, baseY) {
+    const i = this.ptr++;
+    if (this.ptr === this.size) this.ptr = 0;
+
+    out.x = baseX + this.dx[i];
+    out.y = baseY + this.dy[i];
+  }
+}
+
+/* ====================== OPTIMIZED EVENT MANAGER (TIME WHEEL) ====================== */
+ 
+/* ====================== DOMAIN HEAP EVENT MANAGER ====================== */
+/*
+  Purpose:
+  Schedules minions using a min-heap sorted by endTick.
+  Each domain owns one manager.
+
+  Only minions whose travel finished are processed.
+*/
+
+class OptimizedEventManager {
+
+  constructor() {
+    this.heap = [];
+    this.size = 0;
+  }
+
+  /* ---------- Reset ---------- */
+
+  reset() {
+    this.heap.length = 0;
+    this.size = 0;
+  }
+
+  /* ---------- Heap helpers ---------- */
+
+  _swap(i, j) {
+    const h = this.heap;
+    const t = h[i];
+    h[i] = h[j];
+    h[j] = t;
+  }
+
+  _bubbleUp(i) {
+    const h = this.heap;
+
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+
+      if (h[p].endTick <= h[i].endTick) break;
+
+      this._swap(i, p);
+      i = p;
+    }
+  }
+
+  _bubbleDown(i) {
+    const h = this.heap;
+    const n = this.size;
+
+    while (true) {
+      let smallest = i;
+
+      const l = i * 2 + 1;
+      const r = l + 1;
+
+      if (l < n && h[l].endTick < h[smallest].endTick) smallest = l;
+      if (r < n && h[r].endTick < h[smallest].endTick) smallest = r;
+
+      if (smallest === i) break;
+
+      this._swap(i, smallest);
+      i = smallest;
+    }
+  }
+
+  /* ---------- Public API ---------- */
+
+  push(minion) {
+    const h = this.heap;
+
+    h[this.size] = minion;
+    this._bubbleUp(this.size);
+    this.size++;
+  }
+
+  pop() {
+    if (this.size === 0) return null;
+
+    const h = this.heap;
+    const root = h[0];
+
+    this.size--;
+
+    if (this.size > 0) {
+      h[0] = h[this.size];
+      this._bubbleDown(0);
+    }
+
+    return root;
+  }
+
+  peek() {
+    return this.size > 0 ? this.heap[0] : null;
+  }
+
+  /* ---------- Core Update ---------- */
+
+  update(currentTick) {
+
+    while (this.size > 0) {
+
+      const m = this.heap[0];
+
+      if (m.endTick > currentTick) break;
+
+      this.pop();
+
+      /* snap to destination */
+
+      m.x = m.endX;
+      m.y = m.endY;
+
+      m._arrived = true;
+
+      /* reuse existing logic */
+
+      m.update();
+
+      /* schedule next movement */
+
+      m.prepareOptimized(currentTick);
+
+      this.push(m);
+    }
+  }
+}
+
+/* =========== Depots =========== */
+class Depot {
+  constructor(cx,cy,w,h,stroke,dash){
+    this.cx=cx; this.cy=cy; this.w=w; this.h=h; this.stroke = stroke; this.dash = dash || [];
+  }
+  contains(x,y){
+    return x > this.cx - this.w/2 && x < this.cx + this.w/2 &&
+           y > this.cy - this.h/2 && y < this.cy + this.h/2;
+  }
+  randomPointInside(pad = 20){
+    return { x: this.cx + (rng.next()-0.5)*(this.w - pad), y: this.cy + (rng.next()-0.5)*(this.h - pad) };
+  }
+  drawRect(ctx, vp){
+    const tl = vp.worldToScreen(this.cx - this.w/2, this.cy - this.h/2);
+    ctx.save();
+    ctx.strokeStyle = this.stroke; ctx.setLineDash(this.dash); ctx.lineWidth = 2;
+    ctx.strokeRect(tl.x, tl.y, this.w, this.h);
+    ctx.restore();
+  }
+}
+
+class DomainDepot extends Depot {
+  constructor(cx,cy,w,h){ super(cx,cy,w,h, CONFIG.DOMAIN_DEPOT_STROKE, CONFIG.DOMAIN_DEPOT_DASH); this.stock = 0; }
+  draw(ctx, vp){
+    // depot rect
+    this.drawRect(ctx, vp);
+
+    // stock bubble at depot center (logarithmic radius)
+    const s = vp.worldToScreen(this.cx, this.cy);
+    if (this.stock > 0){
+      const r = stockRadius(this.stock);
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, r, 0, Math.PI*2);
+      ctx.fillStyle = CONFIG.DOMAIN_STOCK_FILL;
+      ctx.fill();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = CONFIG.DOMAIN_STOCK_STROKE;
+      ctx.stroke();
+
+      // number inside bubble (keeps same visual)
+      ctx.fillStyle = "#000";
+      ctx.font = "12px sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(this.stock, s.x, s.y);
+      ctx.restore();
+    }
+  }
+}
+
+class CentralDepot extends Depot {
+  constructor(cx,cy,w,h){ super(cx,cy,w,h, CONFIG.CENTRAL_DEPOT_STROKE, CONFIG.CENTRAL_DEPOT_DASH); this.counter = 0; }
+  draw(ctx, vp){
+    this.drawRect(ctx, vp);
+    const tl = vp.worldToScreen(this.cx - this.w/2, this.cy - this.h/2);
+    ctx.save();
+    ctx.fillStyle = "#fff"; ctx.font = "16px sans-serif"; ctx.textAlign = "center";
+    ctx.fillText("Central Delivered: " + this.counter, tl.x + this.w/2, tl.y - 10);
+    ctx.restore();
+  }
+}
+
+/* =========== Entities =========== */
+class Circle {
+  constructor(x,y,r = CONFIG.RESOURCE_RADIUS){ this.x=x; this.y=y; this.r=r}
+  draw(ctx, vp){
+    const s = vp.worldToScreen(this.x, this.y);
+    if (s.x + this.r < 0 || s.x - this.r > vp.width || s.y + this.r < 0 || s.y - this.r > vp.height) return;
+    ctx.save();
+    ctx.beginPath(); ctx.arc(s.x, s.y, this.r, 0, Math.PI*2);
+    ctx.fillStyle = CONFIG.RESOURCE_FILL; ctx.fill();
+    ctx.lineWidth = 1; ctx.strokeStyle = CONFIG.RESOURCE_STROKE; ctx.stroke();
+    ctx.restore();
+  }
+}
+
+/* Local minion (domain-local) */
+class LocalMinion {
+  constructor(x, y, size, domain, circle) {
+    this.x = x;
+    this.y = y;
+    this.size = size;
+    this.speed = CONFIG.MINION_SPEED;
+    this.carryspeed = CONFIG.MINION_SPEED/2;
+
+    this.domain = domain;
+    this.target = circle;
+    this.carrying = false;
+    this.dropX = 0;
+    this.dropY = 0;
+
+    this._arrived = false;
+
+    /* ===== OPTIMIZED MODE STATE ===== */
+    this.startX = x;
+    this.startY = y;
+    this.endX = 0;
+    this.endY = 0;
+
+    this.startTick = 0;
+    this.endTick = 0;
+
+    // cached inverse duration (avoid division every frame)
+    this.invDuration = 0;
+  }
+
+  _computeCentralDepotEdgeDrop() {
+    const d = this.domain.depot;
+    const dx = this.x - d.cx;
+    const dy = this.y - d.cy;
+    const tx = (d.w * 0.5) / Math.abs(dx);
+    const ty = (d.h * 0.5) / Math.abs(dy);
+    const t = Math.min(tx, ty);
+
+    this.dropX = d.cx + dx * t;
+    this.dropY = d.cy + dy * t;
+  }
+  
+  moveTowards(tx, ty, speed) {
+    const dx = tx - this.x;
+    const dy = ty - this.y;
+    const d = Math.hypot(dx, dy);
+
+    if (d > speed) {
+      const inv = speed / d;
+      this.x += dx * inv;
+      this.y += dy * inv;
+      this._arrived = false;
+    } else {
+      this.x = tx;
+      this.y = ty;
+      this._arrived = true;
+    }
+  }
+
+  update() {
+    if (this.carrying) {
+      // deliver to depot center
+      this.moveTowards(this.dropX, this.dropY, this.carryspeed);
+
+      if (this._arrived) {
+        this._arrived = false;
+        this.domain.depot.stock += 1;
+        this.domain.respawnCircle(this.target);
+        this.carrying = false;
       }
 
-      reset() {
-        this.x = Math.random() * (this.w - 50);
-        this.y = Math.random() * (this.h - 50);
-        this.vx = (Math.random() * 2 + 1) * (Math.random() < 0.5 ? 1 : -1);
-        this.vy = (Math.random() * 2 + 1) * (Math.random() < 0.5 ? 1 : -1);
-        this.size = 40;
+    } else {
+      this.moveTowards(this.target.x, this.target.y, this.speed);
+
+      if (this._arrived) {
+        this._arrived = false;
+        this.carrying = true;
+
+        this._computeCentralDepotEdgeDrop();
+      }
+    }
+  }
+
+  prepareOptimized(simTick) {
+    this.startTick = simTick;
+    this.startX = this.x;
+    this.startY = this.y;
+
+    let speed = this.speed;
+
+    if (this.carrying) {
+      this.endX = this.dropX;
+      this.endY = this.dropY;
+      speed = this.carryspeed;
+    } else {
+      this.endX = this.target.x;
+      this.endY = this.target.y;
+    }
+
+    const dx = this.endX - this.startX;
+    const dy = this.endY - this.startY;
+    const dist = Math.hypot(dx, dy);
+
+    const duration = Math.max(1, Math.ceil(dist / speed));
+
+    this.endTick = simTick + duration;
+    this.invDuration = 1 / duration;
+  }
+
+  interpolate(currentTick) {
+    // clamp t ∈ [0, 1]
+    let t = (currentTick - this.startTick) * this.invDuration;
+
+    // linear interpolation
+    this.x = this.startX + (this.endX - this.startX) * t;
+    this.y = this.startY + (this.endY - this.startY) * t;
+  }
+
+  draw(ctx, vp) {
+    const s = vp.worldToScreen(this.x, this.y);
+    const h = this.size * 0.5;
+
+    const left = s.x - h;
+    const top  = s.y - h;
+
+    // draw minion
+    ctx.fillStyle = "#00ffcc";
+    ctx.fillRect(left, top, this.size, this.size);
+
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = "#000";
+    ctx.strokeRect(left, top, this.size, this.size);
+
+    if (this.carrying) {
+      // draw carried resource as ATTACHMENT (screen-space)
+      const r = this.target.r;
+      const cy = top - r - CONFIG.SMALL_RESOURCE_OFFSET;
+
+      // optional culling (cheap)
+      if (cy + r >= 0) {
+        ctx.beginPath();
+        ctx.arc(s.x, cy, r, 0, Math.PI * 2);
+        ctx.fillStyle = CONFIG.RESOURCE_FILL;
+        ctx.fill();
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = CONFIG.RESOURCE_STROKE;
+        ctx.stroke();
+      }
+    } else {
+      // draw resource normally in world space
+      this.target.draw(ctx, vp);
+    }
+  }
+}
+
+
+/* Big Minion: assigned to one domain depot, collects whole domain.stock at center */
+class BigMinion {
+  constructor(domain, centralDepot) {
+    this.domain = domain;
+    this.centralDepot = centralDepot;
+
+    this.x = domain.depot.cx;
+    this.y = domain.depot.cy;
+
+    this.size = CONFIG.BIG_MINION_SIZE;
+    this.speed = CONFIG.BIG_MINION_SPEED;
+
+    this.state = "toDomain";
+    this.carryingCount = 0;
+
+    this.tx = domain.depot.cx;
+    this.ty = domain.depot.cy;
+
+    this.dropX = 0;
+    this.dropY = 0;
+
+    this._arrived = true;
+
+    // optimized movement data
+    this.startX = 0;
+    this.startY = 0;
+
+    this.endX = 0;
+    this.endY = 0;
+
+    this.startTick = 0;
+    this.endTick = 0;
+    
+    this.invDuration = 0;
+  }
+
+  _computeCentralDepotEdgeDrop() {
+    const d = this.centralDepot;
+
+    const dx = this.x - d.cx;
+    const dy = this.y - d.cy;
+
+    const tx = (d.w * 0.5) / Math.abs(dx);
+    const ty = (d.h * 0.5) / Math.abs(dy);
+
+    const t = tx < ty ? tx : ty;
+
+    this.dropX = d.cx + dx * t;
+    this.dropY = d.cy + dy * t;
+  }
+
+
+  moveTowards(tx, ty) {
+    const dx = tx - this.x;
+    const dy = ty - this.y;
+    const d = Math.hypot(dx, dy);
+
+    if (d > this.speed) {
+      this.x += dx / d * this.speed;
+      this.y += dy / d * this.speed;
+      this._arrived = false;
+    } else {
+      this.x = tx;
+      this.y = ty;
+      this._arrived = true;
+    }
+  }
+
+  prepareOptimized(currentTick) {
+    this.startX = this.x;
+    this.startY = this.y;
+    this.startTick = currentTick;
+
+    this.endX = this.tx;
+    this.endY = this.ty;
+
+    const dx = this.endX - this.startX;
+    const dy = this.endY - this.startY;
+
+    const dist = Math.hypot(dx, dy);
+
+    const duration = Math.max(1, Math.ceil(dist / this.speed));
+
+    this.endTick = currentTick + duration;
+    this.invDuration = 1 / duration;
+  }
+
+  update() {
+    this.moveTowards(this.tx, this.ty);
+
+    if (!this._arrived) return;
+
+    if (this.state === "toDomain") {
+      const count = this.domain.depot.stock;
+      if (count > 0) {
+        this.carryingCount = count;
+        this.domain.depot.stock = 0;
+
+        this._computeCentralDepotEdgeDrop();
+        this.tx = this.dropX;
+        this.ty = this.dropY;
+        this.state = "toCenter";
       }
 
-      update() {
-        this.x += this.vx;
-        this.y += this.vy;
-        if (this.x <= 0 || this.x + this.size >= this.w) this.vx *= -1;
-        if (this.y <= 0 || this.y + this.size >= this.h) this.vy *= -1;
+    } else {if (this.carryingCount > 0) {
+        this.centralDepot.counter += this.carryingCount;
+        this.carryingCount = 0;
       }
 
-      draw(ctx) {
-        ctx.fillStyle = "#00ffcc";
-        ctx.fillRect(this.x, this.y, this.size, this.size);
+      this.tx = this.domain.depot.cx;
+      this.ty = this.domain.depot.cy;
+      this.state = "toDomain";
+    }
+  }
+
+  interpolate(currentTick) {
+    let t = (currentTick - this.startTick) * this.invDuration;
+
+    if (t < 0) t = 0;
+    else if (t > 1) t = 1;
+
+    this.x = this.startX + (this.endX - this.startX) * t;
+    this.y = this.startY + (this.endY - this.startY) * t;
+  }
+
+  isVisible(vLeft, vRight, vTop, vBottom) {
+    const x = this.x;
+    const y = this.y;
+
+    return (
+      x > vLeft &&
+      x < vRight &&
+      y > vTop &&
+      y < vBottom
+    );
+  }
+
+  draw(ctx, vp) {
+    const s = vp.worldToScreen(this.x, this.y);
+    const h = this.size / 2;
+
+    ctx.fillStyle = CONFIG.BIG_MINION_COLOR;
+    ctx.fillRect(s.x - h, s.y - h, this.size, this.size);
+
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = CONFIG.BIG_MINION_OUTLINE;
+    ctx.strokeRect(s.x - h, s.y - h, this.size, this.size);
+
+    if (this.carryingCount > 0) {
+      const r = stockRadius(this.carryingCount);
+      const bubbleY = s.y - h - r - CONFIG.BIG_RESOURCE_OFFSET;
+
+      ctx.beginPath();
+      ctx.arc(s.x, bubbleY, r, 0, Math.PI * 2);
+      ctx.fillStyle = CONFIG.BIG_RESOURCE_FILL;
+      ctx.fill();
+      ctx.strokeStyle = CONFIG.BIG_RESOURCE_STROKE;
+      ctx.stroke();
+
+      ctx.fillStyle = "#000";
+      ctx.font = "12px sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(this.carryingCount, s.x, bubbleY);
+    }
+  }
+}
+
+/* =========== Domain =========== */
+class Domain {
+  constructor(sim, x, y, w, h, minionsTarget){
+    this.sim = sim;
+    this.bounds = { x, y, w, h };
+    this.boxes = [];
+    this.depot = new DomainDepot(x + w/2, y + h/2, CONFIG.DOMAIN_DEPOT_W, CONFIG.DOMAIN_DEPOT_H);
+
+    this.targetMinions = minionsTarget;
+
+    // spawn all local minions and resources immediately
+    for(let i=0;i<this.targetMinions;i++){
+      const p = this.depot.randomPointInside(40);
+      const b = new LocalMinion(p.x, p.y, CONFIG.MINION_SIZE, this);
+      b.target = this.spawnCircle();
+      this.boxes.push(b);
+    }
+
+    // domain-local scheduler
+    this.eventManager = new OptimizedEventManager();
+  }
+
+  isVisible(vp) {
+    const { x, y, w, h } = this.bounds;
+
+    // domain rectangle in world-space
+    const left = x;
+    const right = x + w;
+    const top = y;
+    const bottom = y + h;
+
+    // viewport rectangle in world-space
+    const vLeft   = vp.x - vp.width  / 2;
+    const vRight  = vp.x + vp.width  / 2;
+    const vTop    = vp.y - vp.height / 2;
+    const vBottom = vp.y + vp.height / 2;
+
+    // AABB overlap
+    return !(
+      right < vLeft ||
+      left > vRight ||
+      bottom < vTop ||
+      top > vBottom
+    );
+  }
+
+  spawnCircle() {
+    const c = new Circle(0, 0, CONFIG.RESOURCE_RADIUS);
+    this.sim.offsetPool.randomCoordinate(
+      c,
+      this.bounds.x,
+      this.bounds.y
+    );
+    return c;
+  }
+
+  respawnCircle(circle) {
+    this.sim.offsetPool.randomCoordinate(
+      circle,
+      this.bounds.x,
+      this.bounds.y
+    );
+  }
+
+  update(){ for(const b of this.boxes) b.update(); }
+
+  interpolate(tick){ for(const b of this.boxes) b.interpolate(tick); }
+
+  draw(ctx, vp){
+    this.depot.draw(ctx, vp);
+    for(const b of this.boxes) b.draw(ctx, vp);
+  }
+}
+
+/* =========== Simulation =========== */
+class Simulation {
+  constructor(canvas, totalMinions){
+    this.canvas = canvas; this.ctx = canvas.getContext('2d');
+    this.worldWidth = CONFIG.WORLD_WIDTH; this.worldHeight = CONFIG.WORLD_HEIGHT;
+
+    this.viewport = new Viewport(this.worldWidth/2, this.worldHeight/2, canvas.width, canvas.height, this.worldWidth, this.worldHeight);
+
+    // domain grid
+    this.n = CONFIG.DOMAIN_DIVISIONS;
+    this.cellW = this.worldWidth / this.n;
+    this.cellH = this.worldHeight / this.n;
+
+    // central depot
+    this.centralDepot = new CentralDepot(this.worldWidth/2, this.worldHeight/2, CONFIG.CENTRAL_DEPOT_W, CONFIG.CENTRAL_DEPOT_H);
+
+    // totals
+    this.totalMinions = totalMinions;
+    this.totalResources = totalMinions; // keep 1:1
+
+    this.offsetPool = new OffsetPool(this.totalMinions, this.cellW, this.cellH, CONFIG.DOMAIN_DEPOT_W, CONFIG.DOMAIN_DEPOT_H);
+
+    // Compute per-domain distribution (minions & resources)
+    const domainCount = this.n * this.n;
+    const baseMin = Math.floor(this.totalMinions / domainCount);
+    const remMin = this.totalMinions % domainCount;
+    const baseRes = Math.floor(this.totalResources / domainCount);
+    const remRes = this.totalResources % domainCount;
+
+    // create domains with per-domain counts (distributed evenly)
+    this.domains = [];
+    let idx = 0;
+    for(let gy=0; gy<this.n; gy++){
+      for(let gx=0; gx<this.n; gx++){
+        const x = gx * this.cellW, y = gy * this.cellH;
+        const minTarget = baseMin + (idx < remMin ? 1 : 0);
+        const d = new Domain(this, x, y, this.cellW, this.cellH, minTarget);
+        this.domains.push(d);
+        idx++;
       }
     }
 
-    class Simulation {
-      constructor(canvasId) {
-        const canvas = document.getElementById(canvasId);
-        this.canvas = canvas;
-        this.ctx = canvas.getContext("2d");
-        this.box = new BouncingBox(canvas.width, canvas.height);
-      }
+    // --- create one big minion per domain, but spawn them inside central depot ---
+    this.bigMinions = [];
 
-      update() {
-        this.box.update();
-      }
+    for (let i = 0; i < this.domains.length; i++) {
+      const domain = this.domains[i];
 
-      draw() {
-        this.ctx.fillStyle = "#222";
-        this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-        this.box.draw(this.ctx);
+      // construct using the existing constructor (domain, centralDepot)
+      const bm = new BigMinion(domain, this.centralDepot);
+      bm.target = { x: domain.depot.cx, y: domain.depot.cy };
+
+      this.bigMinions.push(bm);
+    }
+
+    this.bigEventManager = new OptimizedEventManager();
+
+    // input (dragging)
+    this._dragging = false; this._lastX = 0; this._lastY = 0;
+    this._bindDrag();
+
+    this.optimized = false;
+
+    this.durationSeconds = durationInput.value;
+
+    this.maxTicks = this.durationSeconds * CONFIG.TICKS_PER_SECOND;
+
+    this.tick = 0;          // simulation tick counter
+    this.dt = 1;            // fixed-tick step (kept for future use)
+  }
+
+  destroy(){
+    if(this._onMouseDown) this.canvas.removeEventListener('mousedown', this._onMouseDown);
+    if(this._onMouseMove) window.removeEventListener('mousemove', this._onMouseMove);
+    if(this._onMouseUp) window.removeEventListener('mouseup', this._onMouseUp);
+    if(this._onTouchStart) this.canvas.removeEventListener('touchstart', this._onTouchStart);
+    if(this._onTouchMove) window.removeEventListener('touchmove', this._onTouchMove, { passive:false });
+    if(this._onTouchEnd) window.removeEventListener('touchend', this._onTouchEnd);
+  }
+
+  resize(w,h){ this.viewport.setSize(w,h); }
+
+  _bindDrag(){
+    this._onMouseDown = e => { this._dragging = true; this._lastX = e.clientX; this._lastY = e.clientY; };
+    this._onMouseMove = e => { if(!this._dragging) return;
+      const dx = (this._lastX - e.clientX) * CONFIG.DRAG_MULT_MOUSE;
+      const dy = (this._lastY - e.clientY) * CONFIG.DRAG_MULT_MOUSE;
+      this.viewport.move(dx, dy);
+      this._lastX = e.clientX; this._lastY = e.clientY;
+    };
+    this._onMouseUp = () => { this._dragging = false; };
+    this.canvas.addEventListener('mousedown', this._onMouseDown);
+    window.addEventListener('mousemove', this._onMouseMove);
+    window.addEventListener('mouseup', this._onMouseUp);
+
+    this._onTouchStart = e => { if(e.touches.length !== 1) return; this._dragging = true; this._lastX = e.touches[0].clientX; this._lastY = e.touches[0].clientY; };
+    this._onTouchMove = e => { if(!this._dragging || e.touches.length !== 1) return; e.preventDefault();
+      const x = e.touches[0].clientX, y = e.touches[0].clientY;
+      const dx = (this._lastX - x) * CONFIG.DRAG_MULT_TOUCH;
+      const dy = (this._lastY - y) * CONFIG.DRAG_MULT_TOUCH;
+      this.viewport.move(dx, dy); this._lastX = x; this._lastY = y;
+    };
+    this._onTouchEnd = () => { this._dragging = false; };
+    this.canvas.addEventListener('touchstart', this._onTouchStart, { passive: true });
+    window.addEventListener('touchmove', this._onTouchMove, { passive: false });
+    window.addEventListener('touchend', this._onTouchEnd);
+  }
+
+  enableOptimizedMode() {
+    this.optimized = true;
+
+    for (const d of this.domains) {
+      d.eventManager.reset();
+      for (const m of d.boxes) {
+        m.prepareOptimized(this.tick);
+        d.eventManager.push(m);
       }
     }
 
-    const sim1 = new Simulation("canvas1"); // Naive
-    const sim2 = new Simulation("canvas2"); // Optimized
+    this.bigEventManager.reset();
 
-    function loop() {
-      sim1.update();
-      sim2.update();
-      sim1.draw();
-      sim2.draw();
-      requestAnimationFrame(loop);
+    for (const bm of this.bigMinions) {
+      bm.prepareOptimized(this.tick);
+      this.bigEventManager.push(bm);
+    }
+  }
+
+  disableOptimizedMode() {
+    this.optimized = false;
+    for (const d of this.domains) {
+      d.interpolate(this.tick);
+      d.eventManager.reset();
+    }
+    for (const bm of this.bigMinions) {
+      bm.interpolate(this.tick);
+    }
+    this.bigEventManager.reset();
+  }
+
+  update() {
+    this.tick += this.dt;
+    
+    if (this.optimized) {
+      this.optimizedUpdate();
+    } else {
+      this.unoptimizedUpdate();
+    }
+  }
+
+  unoptimizedUpdate(){
+    for(const d of this.domains) d.update();
+    for(const bm of this.bigMinions) bm.update();
+  }
+
+  optimizedUpdate() {
+    for (const d of this.domains) {
+      d.eventManager.update(this.tick);
+      if(d.isVisible(this.viewport)) d.interpolate(this.tick);
+    }
+    this.bigEventManager.update(this.tick);
+
+    for (const bm of this.bigMinions) {
+      bm.interpolate(this.tick);
+    }
+  }
+
+  draw(){
+    const ctx = this.ctx;
+    this.viewport.clear(ctx);
+
+    // domain grid
+    this.viewport.drawDomainGrid(ctx, this.cellW, this.cellH, this.n);
+
+    // domains (depots, local minions, resources)
+    for (const d of this.domains) {
+      if (d.isVisible(this.viewport)) {
+        d.draw(ctx, this.viewport);
+      }
     }
 
-    loop();
+    // central depot
+    this.centralDepot.draw(ctx, this.viewport);
+
+    const vp = this.viewport;
+
+    /* normal viewport bounds */
+    let vLeft   = vp.x - vp.width  * 0.5;
+    let vRight  = vp.x + vp.width  * 0.5;
+    let vTop    = vp.y - vp.height * 0.5;
+    let vBottom = vp.y + vp.height * 0.5;
+
+    /* expand bounds by half big-minion size */
+    const pad = CONFIG.BIG_MINION_SIZE * 0.5;
+
+    vLeft   -= pad;
+    vRight  += pad;
+    vTop    -= pad;
+    vBottom += pad;
+
+    // big minions
+    for (const bm of this.bigMinions) {
+      if (bm.isVisible(vLeft, vRight, vTop, vBottom)) {
+        bm.draw(ctx, vp);
+      }
+    }
+
+    // world border last
+    this.viewport.drawWorldBorder(ctx);
+  }
+}
+
+/* =========== App wiring =========== */
+const stage = document.getElementById('stage');
+const canvas = document.getElementById('canvas1');
+const minusBtn = document.getElementById('minusBtn');
+const plusBtn = document.getElementById('plusBtn');
+const centerBtn = document.getElementById('centerBtn');
+const minionCountEl = document.getElementById('minionCount');
+const optBtn = document.getElementById('optBtn');
+const seedInput = document.getElementById('seedInput');
+const durationInput = document.getElementById('durationInput');
+const restartBtn = document.getElementById('restartBtn');
+const pauseBtn = document.getElementById('pauseBtn');
+
+optBtn.addEventListener('click', () => {
+
+  optimizedMode = !optimizedMode;
+
+  optBtn.textContent = optimizedMode
+    ? "Optimized: ON"
+    : "Optimized: OFF";
+
+  optBtn.classList.toggle("opt-on", optimizedMode);
+
+  if (!sim) return;
+
+  if (optimizedMode) {
+    sim.enableOptimizedMode();
+  } else {
+    sim.disableOptimizedMode();
+  }
+
+});
+
+seedInput.addEventListener('change', () => {
+  startSim();
+});
+
+durationInput.addEventListener('change', () => {
+  startSim();
+});
+
+restartBtn.addEventListener('click', () => {
+  startSim();
+});
+
+pauseBtn.addEventListener('click', () => {
+  paused = !paused;
+  pauseBtn.textContent = paused ? "▶" : "⏸";
+});
+
+function sanitizeInputs(){
+  seedInput.value = Math.floor(Number(seedInput.value));
+  durationInput.value = Math.max(1, Math.floor(Number(durationInput.value)));
+}
+
+function resizeCanvas(){
+  const rect = stage.getBoundingClientRect();
+  canvas.width = Math.floor(rect.width);
+  canvas.height = Math.floor(rect.height);
+  if(sim) sim.resize(canvas.width, canvas.height);
+}
+window.addEventListener('resize', resizeCanvas);
+
+const steps = CONFIG.MINION_STEPS;
+let stepIndex = 0;
+let sim = null;
+let rng = null;
+let optimizedMode = false;
+let paused = false;
+
+function updateCountLabel(){ minionCountEl.textContent = `${steps[stepIndex]} minions`; }
+
+function createRNG(){
+  rng = new RNG(seedInput.value);
+}
+
+function startSim(){
+  sanitizeInputs();
+  createRNG();
+  if(sim){ sim.destroy(); }
+  sim = new Simulation(canvas, steps[stepIndex], 1);
+  if (optimizedMode) {
+    sim.enableOptimizedMode();
+  }
+  updateCountLabel();
+}
+
+// Controls
+minusBtn.addEventListener('click', () => { if(stepIndex > 0){ stepIndex--; startSim(); }});
+plusBtn.addEventListener('click', () => { if(stepIndex < steps.length - 1){ stepIndex++; startSim(); }});
+centerBtn.addEventListener('click', () => { if(sim) sim.viewport.centerOn(sim.worldWidth/2, sim.worldHeight/2); });
+
+// RAF loop
+function loop(){
+  if (paused || (sim.tick >= sim.maxTicks)){
+    requestAnimationFrame(loop);
+    return;
+  }
+
+  PERF.frameBegin();
+
+  if (sim){
+    PERF.updateBegin();
+    sim.update();
+    PERF.updateEnd();
+
+    PERF.drawBegin();
+    sim.draw();
+    PERF.drawEnd();
+  }
+
+  PERF.frameEnd();
+  PERF.draw(sim.ctx);
+
+  requestAnimationFrame(loop);
+}
+
+// Boot
+resizeCanvas();
+createRNG();
+startSim();
+loop();
+
+
   </script>
 </body>
 </html>
