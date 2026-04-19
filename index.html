@@ -1341,16 +1341,13 @@ centerBtn.addEventListener('click', () => { if(sim) sim.viewport.centerOn(sim.wo
 
 // RAF loop
 function loop(){
-  if (paused || (sim.tick >= sim.maxTicks)){
-    requestAnimationFrame(loop);
-    return;
-  }
-
   PERF.frameBegin();
 
   if (sim){
     PERF.updateBegin();
-    sim.update();
+    if (!(paused || (sim.tick >= sim.maxTicks))){
+      sim.update();
+    }
     PERF.updateEnd();
 
     PERF.drawBegin();
