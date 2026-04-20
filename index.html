@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Resources Gathering Minions — Domains + Big Minions</title>
+  <title>Resource Gathering Simulation</title>
   <style>
     html, body {
       margin: 0; padding: 0; height: 100%; background: #111;
@@ -35,6 +35,56 @@
       border-color: #3bc46a !important;
     }
     #minionCount { color: #ddd; min-width: 110px; text-align:center; }
+    #infoBtn {
+      background: #2a2a2a;
+      border: 1px solid #666;
+      color: #fff;
+      border-radius: 50%;
+      width: 28px;
+      height: 28px;
+      font-weight: bold;
+      position: relative;
+      animation: pulseGlow 2s infinite;
+    }
+
+    @keyframes pulseGlow {
+      0%   { box-shadow: 0 0 0px rgba(100,200,255,0.2); }
+      50%  { box-shadow: 0 0 20px rgba(100,200,255,0.6); }
+      100% { box-shadow: 0 0 0px rgba(100,200,255,0.2); }
+    }
+
+    /* info cloud */
+    #infoBox {
+      position: absolute;
+      top: 50px;
+      right: 10px;
+      width: 300px;
+      background: rgba(0,0,0,0.85);
+      border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 8px;
+      padding: 12px;
+      font-size: 13px;
+      color: #ddd;
+      display: none;
+      backdrop-filter: blur(6px);
+    }
+
+    /* little arrow */
+    #infoBox::before {
+      content: "";
+      position: absolute;
+      top: -8px;
+      right: 14px;
+      border-width: 0 8px 8px 8px;
+      border-style: solid;
+      border-color: transparent transparent rgba(0,0,0,0.85) transparent;
+    }
+
+    .info-content h3 {
+      margin: 0 0 6px 0;
+      font-size: 14px;
+      color: #fff;
+    }
   </style>
 </head>
 <body>
@@ -57,6 +107,23 @@
       <input id="durationInput" type="number" value="60" step="1" min="1" style="width:70px">
       <button id="restartBtn" title="Restart simulation">⟳</button>
       <button id="pauseBtn" title="Pause / Play">⏸</button>
+      <button id="infoBtn" title="How it works">ⓘ</button>
+    </div>
+    <div id="infoBox">
+      <div class="info-content">
+        <h3>Optimization Strategy</h3>
+        <p>
+          <b>Unoptimized Mode:</b> All minions are updated every frame, moving incrementally toward targets.<br>
+          This results in O(N) work per tick.<br><br>
+          <b>Optimized Mode:</b> Each minion computes its full movement upfront and schedules its arrival.<br>
+          Minions are placed in a time-ordered priority queue (min-heap).<br><br>
+          Only minions whose arrival time has been reached are processed.<br>
+          All others are skipped.<br><br>
+          Rendering uses interpolation to display smooth motion between events.<br><br>
+          <b>Outcome:</b> Transforms per-frame cost from O(N) → O(K).<br>
+          where K = number of completed movements.
+        </p>
+      </div>
     </div>
   </div>
 
@@ -1338,6 +1405,33 @@ function startSim(){
 minusBtn.addEventListener('click', () => { if(stepIndex > 0){ stepIndex--; startSim(); }});
 plusBtn.addEventListener('click', () => { if(stepIndex < steps.length - 1){ stepIndex++; startSim(); }});
 centerBtn.addEventListener('click', () => { if(sim) sim.viewport.centerOn(sim.worldWidth/2, sim.worldHeight/2); });
+
+const infoBtn = document.getElementById('infoBtn');
+const infoBox = document.getElementById('infoBox');
+
+let infoVisible = false;
+
+// toggle on click (works for desktop + mobile)
+infoBtn.addEventListener('click', () => {
+  infoVisible = !infoVisible;
+  infoBox.style.display = infoVisible ? 'block' : 'none';
+});
+
+// optional: hover for desktop
+infoBtn.addEventListener('mouseenter', () => {
+  infoBox.style.display = 'block';
+});
+
+infoBtn.addEventListener('mouseleave', () => {
+  if (!infoVisible) infoBox.style.display = 'none';
+});
+
+document.addEventListener('click', (e) => {
+  if (!infoBox.contains(e.target) && e.target !== infoBtn) {
+    infoVisible = false;
+    infoBox.style.display = 'none';
+  }
+});
 
 // RAF loop
 function loop(){
